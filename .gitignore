@@ -1,0 +1,10 @@
+# Runtime output from the scripts. These contain machine-specific data
+# (registry exports, PATH, package lists, logs) and must never be committed.
+cache/
+backup/
+logs/
+thay_doi_sys.md
+*.log
+
+# Build artifact: rebuild from the tracked scripts instead of committing it.
+/winget-toolpack.zip
