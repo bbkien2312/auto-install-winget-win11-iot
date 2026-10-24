@@ -1,4 +1,4 @@
-# Hướng dẫn tool-pack cài WinGet
+﻿# Hướng dẫn tool-pack cài WinGet
 
 Tài liệu này mô tả **cách chạy** bộ script và **liệt kê đầy đủ những gì script tải về / cài lên máy**, kèm theo **nguồn gốc và mức độ tin cậy** của từng thành phần.
 
@@ -459,6 +459,8 @@ Tài liệu này trước đó ghi "giữ để có thể cài lại offline". *
 | `cache\` | file cài đã tải (~207 MB trên máy này; ~300 MB nếu có `Dependencies.zip`) |
 | `backup\` | các bản backup |
 | `logs\` | log từng lần chạy |
+
+> Tất cả file `.ps1`, `.md` và `.log` do tool-pack tạo đều là UTF-8 (có BOM). `.bat` mở console bằng `chcp 65001`, còn `lib.ps1` ép `[Console]::OutputEncoding = UTF8`, nên tiếng Việt vẫn đúng khi output bị pipe/redirect. Nếu editor hỏi encoding, chọn UTF-8.
 
 ---
 
