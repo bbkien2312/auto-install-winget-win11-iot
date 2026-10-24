@@ -452,7 +452,7 @@ Tài liệu này trước đó ghi "giữ để có thể cài lại offline". *
 | `install-winget.ps1` | trình cài đặt, có kiểm tra bản đã cài và `-Reinstall` |
 | `uninstall_restore.ps1` | gỡ WinGet / khôi phục registry, có menu và `-KeepPackage` |
 | `check-status.ps1` | khảo sát read-only 9 mục |
-| `lib.ps1` | thư viện chung (log, backup, tải file, hash, so sánh phiên bản) |
+| `lib.ps1` | thư viện chung (log, backup, tải file, hash, so sánh phiên bản, font console) |
 | `thay_doi_sys.md` | **nhật ký bắt buộc** — mọi thay đổi trên hệ thống, kèm đường dẫn backup và lệnh restore |
 | `huongdan_toot-pack.md` | tài liệu này |
 | `winget-toolpack.zip` | **bản đóng gói để mang sang máy khác** — xem mục 11 |
@@ -461,6 +461,8 @@ Tài liệu này trước đó ghi "giữ để có thể cài lại offline". *
 | `logs\` | log từng lần chạy |
 
 > Tất cả file `.ps1`, `.md` và `.log` do tool-pack tạo đều là UTF-8 (có BOM). `.bat` mở console bằng `chcp 65001`, còn `lib.ps1` ép `[Console]::OutputEncoding = UTF8`, nên tiếng Việt vẫn đúng khi output bị pipe/redirect. Nếu editor hỏi encoding, chọn UTF-8.
+>
+> Trên máy không có Windows Terminal (Windows IoT/LTSC), cửa sổ PowerShell cũ có thể dùng font Lucida Console — font này thiếu chữ có dấu nên chữ Việt hiện thành ô vuông dù encoding đúng. `lib.ps1` tự chuyển **cửa sổ console hiện tại** sang Consolas khi script bắt đầu chạy; không ghi registry, chỉ có tác dụng trong cửa sổ đó. Nếu vẫn thấy ô vuông, bấm chuột phải vào thanh tiêu đề → Properties → Font → chọn **Consolas** rồi mở lại cửa sổ.
 
 ---
 

@@ -2,8 +2,9 @@
 <#
     lib.ps1 - Shared helpers for install-winget.ps1 / uninstall_restore.ps1 / check-status.ps1
 
-    Scope of this library: logging, system-state snapshot, registry backup, and the
-    thay_doi_sys.md change log. No system modification happens in here.
+    Scope of this library: console display setup (UTF-8 + font), logging,
+    system-state snapshot, registry backup, and the thay_doi_sys.md change log.
+    No persistent system modification happens in here.
 #>
 
 Set-StrictMode -Version 2.0
@@ -14,6 +15,69 @@ Set-StrictMode -Version 2.0
 # Vietnamese diacritic turns into '?'.
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 $OutputEncoding = [System.Text.Encoding]::UTF8
+
+# Windows IoT ships without Windows Terminal, so scripts run in the legacy
+# console, whose default font (Lucida Console or a raster font) has no
+# Vietnamese glyphs - valid UTF-8 still renders as empty boxes. Point this
+# window at Consolas; the change lasts only for this console session, nothing
+# is written to the registry, and Windows Terminal already reports Consolas.
+function Initialize-ConsoleFont {
+    try {
+        if ([Console]::IsOutputRedirected) { return }
+
+        if (-not ('WingetConsoleFont' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class WingetConsoleFont
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct CONSOLE_FONT_INFO_EX
+    {
+        public uint cbSize;
+        public uint nFont;
+        public short dwFontSizeX;
+        public short dwFontSizeY;
+        public int FontFamily;
+        public int FontWeight;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string FaceName;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr GetStdHandle(int nStdHandle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool GetCurrentConsoleFontEx(IntPtr hConsoleOutput, bool bMaximumWindow, ref CONSOLE_FONT_INFO_EX lpConsoleCurrentFontEx);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool SetCurrentConsoleFontEx(IntPtr hConsoleOutput, bool bMaximumWindow, ref CONSOLE_FONT_INFO_EX lpConsoleCurrentFontEx);
+}
+'@
+        }
+
+        $h = [WingetConsoleFont]::GetStdHandle(-11)
+        if ($h -eq [IntPtr]::Zero -or $h -eq [IntPtr](-1)) { return }
+
+        $cur = New-Object WingetConsoleFont+CONSOLE_FONT_INFO_EX
+        $cur.cbSize = [Runtime.InteropServices.Marshal]::SizeOf([type][WingetConsoleFont+CONSOLE_FONT_INFO_EX])
+        if (-not [WingetConsoleFont]::GetCurrentConsoleFontEx($h, $false, [ref]$cur)) { return }
+
+        $raster = (($cur.FontFamily -band 0x02) -eq 0)
+        $badFace = ($cur.FaceName -eq 'Lucida Console' -or $cur.FaceName -eq 'Terminal' -or $cur.FaceName -eq '')
+        if (-not $badFace -and -not $raster) { return }
+
+        $new = $cur
+        $new.FaceName = 'Consolas'
+        $new.FontFamily = 54
+        $new.FontWeight = 400
+        if ($new.dwFontSizeY -le 0 -or $raster) { $new.dwFontSizeY = 16; $new.dwFontSizeX = 0 }
+        [void][WingetConsoleFont]::SetCurrentConsoleFontEx($h, $false, [ref]$new)
+    } catch { }
+}
+
+Initialize-ConsoleFont
 
 $script:LogPath = $null
 
