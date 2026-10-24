@@ -48,7 +48,7 @@ Tham số sau dấu `.bat` được chuyển **nguyên văn** xuống script Pow
 ### 2.2 Chạy trực tiếp bằng PowerShell
 
 ```powershell
-cd E:\Qcoder\winget-toolpack   # hoặc thư mục bạn đã chép tool-pack vào
+cd C:\winget-toolpack   # hoặc thư mục bạn đã chép tool-pack vào
 
 .\check-status.ps1 -Elevate      # khảo sát read-only, 9 mục, không sửa gì
 .\install-winget.ps1 -DryRun     # diễn tập
@@ -316,7 +316,7 @@ Thay đổi này **chỉ sửa script, không sửa hệ thống**, nên không 
 
 ## 7. Tự kiểm chứng (không cần tin tài liệu này)
 
-Chạy trong PowerShell, từ thư mục tool-pack (ví dụ `E:\Qcoder\winget-toolpack`):
+Chạy trong PowerShell, từ thư mục tool-pack (ví dụ `C:\winget-toolpack`):
 
 ```powershell
 # 1. Gói đã cài và publisher của nó
@@ -359,8 +359,6 @@ Kiểm tra chéo với nguồn công khai: mở `https://github.com/microsoft/wi
 | `backup\20261024-074650\` | lần **cài lại thật** 2026-10-24 07:46 (`-Reinstall`, bài test cuối) | đầy đủ như trên; dùng cho các bước `-KeepPackage` của bài test cuối |
 
 Mỗi thư mục chứa: `reg_*.reg` (registry export), `*.reg.absent.txt` (đánh dấu khoá không tồn tại lúc backup), `path-machine.txt`, `path-user.txt`, `state-before.json`, `appx-allusers.json`, `appx-provisioned.json`, và `undo.json` nếu có sửa registry.
-
-> Các thư mục `20261023-*` trong bản tài liệu trước thuộc bản tool-pack đặt tại `C:\Users\Ryzen9\AppData\Local\Programs\Qoder`, **không** nằm trong repo này. Bản ở `E:\Qcoder\winget-toolpack` hiện có `20261024-074039` và `20261024-074650`.
 
 ### 8.2 Gỡ / khôi phục
 
