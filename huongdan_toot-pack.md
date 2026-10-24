@@ -11,10 +11,11 @@ Mọi con số trong đây (SHA256, dung lượng, phiên bản, publisher) là 
 | Mục | Giá trị |
 |---|---|
 | Hệ điều hành | Microsoft Windows 11 IoT Enterprise LTSC Evaluation |
-| Version / Build | 10.0.26100 / 26100 |
+| Version / Build | 10.0.26100 / 26100.9711 |
 | EditionID | `IoTEnterpriseSEval` |
 | PowerShell | 5.1.26100.9444 (không có `pwsh`) |
-| Microsoft Store | **Không có** — bản LTSC/IoT cắt bỏ, nên WinGet phải cài bằng sideload |
+| Microsoft Store | **Không có** — bản LTSC/IoT cắt bỏ Store |
+| App Installer | **Có sẵn trong image** tại `C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_1.29.380.0_x64__8wekyb3d8bbwe`, `NonRemovable=True`. Tool-pack **đăng ký + provision** gói có sẵn này; Windows **không cho gỡ** nó (xem §4.6) |
 
 ---
 
@@ -24,18 +25,22 @@ Mọi con số trong đây (SHA256, dung lượng, phiên bản, publisher) là 
 
 | File | Tác dụng |
 |---|---|
-| `install.bat` | Gọi `install-winget.ps1` |
-| `restore.bat` | Gọi `restore-winget.ps1`, có liệt kê các bản backup hiện có |
+| `install.bat` | Gọi `install-winget.ps1`. Nếu WinGet đã cài, script hỏi bỏ qua / cài lại / thoát trước khi làm gì |
+| `uninstall_restore.bat` | Gọi `uninstall_restore.ps1`. Không tham số = menu: gỡ WinGet / gỡ + khôi phục registry / chỉ khôi phục registry |
 
 ```bat
 install.bat                                   :: cài thật (all-users + provisioned)
 install.bat -DryRun                           :: xem trước, KHÔNG sửa gì
+install.bat -Reinstall                        :: cài lại bản mới nhất, không hỏi (gỡ bản cũ nếu Windows cho phép)
 install.bat -Scope CurrentUser                :: chỉ user hiện tại, không provision
 install.bat -DryRun -SkipHashCheck            :: xem trước, bỏ qua đối chiếu SHA256
 
-restore.bat -DryRun                           :: xem trước sẽ gỡ những gì
-restore.bat -BackupTag 20261023-164150        :: khôi phục từ một bản backup cụ thể
-restore.bat -BackupTag 20261023-164150 -Force :: không hỏi xác nhận
+uninstall_restore.bat                         :: menu gỡ / khôi phục
+uninstall_restore.bat -DryRun                 :: xem trước sẽ gỡ những gì
+uninstall_restore.bat -BackupTag 20261024-074650        :: khôi phục từ một bản backup cụ thể
+uninstall_restore.bat -BackupTag 20261024-074650 -Force :: không hỏi xác nhận
+uninstall_restore.bat -KeepPackage -BackupTag 20261024-074650 :: chỉ khôi phục registry, giữ WinGet
+uninstall_restore.bat -CleanCache             :: gỡ xong thì xoá cache\ (không đụng backup\)
 ```
 
 Tham số sau dấu `.bat` được chuyển **nguyên văn** xuống script PowerShell. File `.bat` chỉ là lớp vỏ: nó **không tự sửa gì trên hệ thống**, không tự elevate (script `.ps1` bên dưới tự làm).
@@ -47,8 +52,10 @@ cd E:\Qcoder\winget-toolpack   # hoặc thư mục bạn đã chép tool-pack v�
 
 .\check-status.ps1 -Elevate      # khảo sát read-only, 9 mục, không sửa gì
 .\install-winget.ps1 -DryRun     # diễn tập
-.\install-winget.ps1             # cài thật
-.\restore-winget.ps1 -DryRun     # diễn tập gỡ
+.\install-winget.ps1             # cài thật (hỏi nếu đã có WinGet)
+.\install-winget.ps1 -Reinstall  # cài lại bản mới nhất (gỡ nếu Windows cho phép)
+.\uninstall_restore.ps1          # menu gỡ / khôi phục
+.\uninstall_restore.ps1 -DryRun  # diễn tập gỡ
 ```
 
 ### 2.3 Trình tự khuyến nghị
@@ -57,22 +64,39 @@ cd E:\Qcoder\winget-toolpack   # hoặc thư mục bạn đã chép tool-pack v�
 2. `install.bat -DryRun` — đọc kỹ những gì sắp đổi.
 3. `install.bat` — bấm **Yes** ở hộp thoại UAC.
 4. Mở **PowerShell mới** rồi chạy `winget --version`.
-5. Nếu có sự cố: `restore.bat -BackupTag <tag>`.
+5. Nếu có sự cố: `uninstall_restore.bat -BackupTag <tag>`.
 
 > Luôn mở cửa sổ PowerShell **mới** sau khi cài: PATH của phiên cũ không tự cập nhật nên `winget` sẽ báo không tìm thấy.
 
 ### 2.4 Script làm gì, theo thứ tự
 
-`install-winget.ps1` chạy 8 bước, mỗi bước đều ghi log:
+`install-winget.ps1` chạy các bước sau, mỗi bước đều ghi log:
 
-1. Khảo sát read-only trước khi đụng vào anything.
+1. Khảo sát read-only. Nếu WinGet đã cài, so sánh với release mới nhất và hỏi bỏ qua / cài lại / thoát (xem §2.5). Gói đã đăng ký nhưng `winget --version` không chạy thì được coi là hỏng và tự sửa.
 2. **Backup**: export registry, snapshot toàn bộ gói appx của mọi user, danh sách gói đã provision, PATH machine + user → `backup\<timestamp>\`.
 3. Hỏi GitHub API lấy release ổn định mới nhất của `microsoft/winget-cli`.
 4. Tải `.msixbundle` + `License1.xml` về `cache\` (giữ lại để đỡ tải lại nếu release không đổi — **không** cài offline được, xem §8.4).
 5. Đối chiếu SHA256 của bundle với hash Microsoft công bố, rồi kiểm chữ ký Authenticode (phải do Microsoft Corporation ký).
 6. Đọc `DesktopAppInstaller_Dependencies.json` của **đúng release đó** để biết cần framework nào, thiếu thì tải `Dependencies.zip` và đối chiếu hash.
-7. `Add-AppxPackage` cho user hiện tại, rồi `Add-AppxProvisionedPackage -Online` cho mọi user tạo sau này.
-8. Verify `winget --version` chạy được, rồi ghi toàn bộ vào `thay_doi_sys.md`.
+7. Nếu chọn cài lại: gỡ gói cũ **nếu Windows cho phép** (provisioned + all-users, hoặc chỉ user hiện tại với `-Scope CurrentUser`). Gói inbox `NonRemovable=True` bị Windows bảo vệ nên bước gỡ được bỏ qua và script chỉ đăng ký/cập nhật đè.
+8. `Add-AppxPackage` cho user hiện tại, rồi `Add-AppxProvisionedPackage -Online` cho mọi user tạo sau này.
+9. Verify `winget --version` chạy được, rồi ghi toàn bộ vào `thay_doi_sys.md`.
+
+### 2.5 Chạy lại khi máy đã có WinGet
+
+Không cần gỡ trước. `install-winget.ps1` phát hiện bản đang cài, gọi GitHub API để biết bản mới nhất, rồi hỏi:
+
+| Trạng thái | Lựa chọn |
+|---|---|
+| Đã cài đủ (user + provisioned) và `winget` chạy được | `[S]` bỏ qua (mặc định) / `[R]` gỡ rồi cài lại bản mới nhất / `[Q]` thoát |
+| `winget` chạy được nhưng chưa provision | `[P]` chỉ provision (mặc định) / `[R]` cài lại rồi provision / `[S]` bỏ qua |
+| Gói có nhưng `winget` không chạy | tự động gỡ và cài lại, không hỏi; nếu là gói hệ thống thì đăng ký lại |
+| Chưa cài | cài mới bình thường |
+
+- `-Reinstall` bỏ qua câu hỏi và luôn cài lại. Trên gói thường, bước này gỡ bản cũ trước; trên gói hệ thống `NonRemovable=True`, Windows từ chối gỡ nên script bỏ qua bước gỡ và chỉ đăng ký/cập nhật đè.
+- `-DryRun` chỉ in ra so sánh phiên bản và kế hoạch, không hỏi và không sửa gì. `-DryRun -Reinstall` in trước toàn bộ quy trình cài lại.
+- Thứ tự an toàn trên gói thường: **backup → tải + kiểm SHA256/Authenticode → gỡ bản cũ → cài bản mới**. Nếu bước cài sau khi gỡ thất bại, máy sẽ **tạm thời không có winget**; chạy lại `install.bat` để cài tiếp. Script luôn ghi rõ cảnh báo này trước khi gỡ. Gói hệ thống không bị gỡ nên không có khoảng trống này.
+- So sánh phiên bản chỉ dùng `major.minor.patch`: package `1.29.380.0` và tag `v1.29.380` được coi là **bằng nhau**, không bị coi là cũ chỉ vì khác thành phần revision.
 
 ---
 
@@ -101,17 +125,19 @@ https://github.com/microsoft/winget-cli/releases
 - Người bấm publish là tài khoản `JohnMcPMS` (PM của nhóm WinGet). Tài khoản cá nhân **không** phải cơ sở tin cậy; cơ sở là repo `microsoft/` và chữ ký Microsoft Corporation bên trong từng gói.
 - Script **không** tải từ bất kỳ mirror, blog, forum hay trang bên thứ ba nào.
 
-### 3.3 Bảng file đã tải (số liệu thật từ `cache\` trên máy này)
+### 3.3 Bảng file có thể được tải (số liệu thật của release v1.29.380)
 
 | # | File | Dung lượng | SHA256 | Hash Microsoft công bố? | Script kiểm? | Mức |
 |---|---|---|---|---|---|---|
 | 1 | `Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle` | 217.276.577 B (207,2 MB) | `65DEA9C01CE08EE7B763366B27C0E651F97DB857C11CA9B9C301826C10092F2E` | Có — `...8wekyb3d8bbwe.txt` | **Có** — hash + Authenticode | **A** |
 | 2 | `Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.txt` | 64 B | — | (chính là file hash) | — | **A** |
-| 3 | `DesktopAppInstaller_Dependencies.zip` | 97.760.717 B (93,2 MB) | `BA875AFE9D190F61218985AC0292A99D1DB710BF93E13C68944CA9D89F0D82D1` | Có — `DesktopAppInstaller_Dependencies.txt` | **Có** — hash zip + Authenticode từng `.appx` | **A** |
+| 3 | `DesktopAppInstaller_Dependencies.zip` (chỉ tải khi thiếu framework) | 97.760.717 B (93,2 MB) | `BA875AFE9D190F61218985AC0292A99D1DB710BF93E13C68944CA9D89F0D82D1` | Có — `DesktopAppInstaller_Dependencies.txt` | **Có** — hash zip + Authenticode từng `.appx` | **A** |
 | 4 | `DesktopAppInstaller_Dependencies.json` | 322 B | — | Không | Đọc trong bộ nhớ, không lưu | **B** |
 | 5 | `e53e159d00e04f729cc2180cffd1c02e_License1.xml` | 2.686 B | `BCB15118EC47DF24E3E6013A7006147C3A15B3A8104ED660FE87C8B4ED01F485` | **Không** | **Không** | **B** |
 
 Cả hai hash ở dòng 1 và 3 đã được đối chiếu và **KHỚP CHÍNH XÁC** với file `.txt` Microsoft đăng cạnh bundle. Ngoài hash, script còn gọi `Get-AuthenticodeSignature` cho bundle và **từng `.appx`** trong zip phụ thuộc; chữ ký phải `Valid` và do `CN=Microsoft Corporation` ký, nếu không script dừng trước khi cài.
+
+Lần chạy thật ngày **2026-10-24 07:40** không tải `Dependencies.zip`: máy đã có đủ 3 framework (xem §4.1), nên `cache\` chỉ còn bundle + file hash + license (~207 MB). Dòng 3 vẫn giữ số liệu thật của release để tham chiếu khi máy thiếu framework.
 
 **File có trong release nhưng script cố ý KHÔNG dùng:** `DesktopAppInstallerPolicies.zip` (41 KB) — là mẫu policy cho doanh nghiệp, không cần cho việc cài.
 
@@ -133,11 +159,11 @@ Rủi ro thực tế thấp, nhưng ghi rõ để bạn biết đây là chỗ d
 
 `DesktopAppInstaller_Dependencies.json` của release này liệt kê **đúng 3 gói**:
 
-| Gói | Version yêu cầu | Trên máy này trước khi cài | Script có cài? |
+| Gói | Version yêu cầu | Trên máy này (kiểm tra 2026-10-24) | Script có cài? |
 |---|---|---|---|
 | `Microsoft.VCLibs.140.00` | 14.0.33519.0 | Đã có sẵn 14.0.33519.0 | Không — đã đủ |
 | `Microsoft.VCLibs.140.00.UWPDesktop` | 14.0.33728.0 | Đã có sẵn 14.0.33728.0 | Không — đã đủ |
-| `Microsoft.WindowsAppRuntime.1.8` | 8000.616.304.0 | **Thiếu** | **Có — đã cài `..._x64.appx`** |
+| `Microsoft.WindowsAppRuntime.1.8` | >= 8000.616.304.0 | Đã có 8000.994.2142.0 | Không — đã đủ (bản mới hơn yêu cầu) |
 
 > **Lưu ý quan trọng về tài liệu Microsoft:** bài *Using WinGet to Install Apps on Windows IoT Enterprise* trên Microsoft Learn bảo tải `VCLibs` từ `aka.ms` và `UI.Xaml` từ **NuGet** (đổi tên `.nupkg` thành `.zip` bằng tay). Bài đó viết cho WinGet 1.4.x và **đã lỗi thời**: bản 1.29 cần `Microsoft.WindowsAppRuntime.1.8` (bài không nhắc tới) và **không còn** liệt kê `UI.Xaml`.
 >
@@ -154,6 +180,8 @@ Rủi ro thực tế thấp, nhưng ghi rõ để bạn biết đây là chỗ d
 | `Microsoft.DesktopAppInstaller` | 2026.917.151.0 | provisioned (mọi user tạo sau) | `CN=Microsoft Corporation` |
 
 Version provisioned hiển thị khác (`2026.917.151.0`) là **bình thường** — đó là cách Windows báo version của gói đã provision, không phải hai gói khác nhau.
+
+> **Phát hiện ngày 2026-10-24:** gói này **không phải do tool-pack mang tới từ đầu**. `Get-AppxPackage Microsoft.DesktopAppInstaller` trả về `NonRemovable=True`; thư mục package trong `C:\Program Files\WindowsApps` có ngày tạo **2026-09-22 07:32**, trùng thời điểm image Windows. Nói cách khác, image LTSC/IoT 24H2 đã có sẵn App Installer ở dạng gói inbox; tool-pack chỉ **đăng ký cho user + provision**. Windows coi đây là thành phần hệ thống và **từ chối mọi lệnh gỡ** — xem §4.6.
 
 ### 4.3 Gói có trên máy nhưng script KHÔNG cài
 
@@ -188,6 +216,39 @@ Get-AuthenticodeSignature cache\deps\x64\Microsoft.WindowsAppRuntime.1.8_8000.61
 
 Từ **2026-10-24**, đây không còn là kiểm tra thủ công: `Assert-MicrosoftSigned` trong `lib.ps1` tự chạy trước mỗi lần `Add-AppxPackage`, yêu cầu `Status = Valid` và signer chứa `CN=Microsoft Corporation`. Đây là kiểm tra **độc lập với SHA256** — hash chỉ chứng minh file khớp với hash cùng nguồn, còn chữ ký chứng minh ai đã ký gói.
 
+### 4.6 Giới hạn quan trọng: Windows không cho gỡ gói này
+
+Kiểm tra thật trên máy này (2026-10-24):
+
+```
+Get-AppxPackage Microsoft.DesktopAppInstaller | Select Name, NonRemovable, SignatureKind, InstallLocation
+
+Name                          NonRemovable SignatureKind InstallLocation
+----                          ------------ ------------- ---------------
+Microsoft.DesktopAppInstaller         True         Store C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_1.29.380.0_x64__8wekyb3d8bbwe
+```
+
+Lần chạy `-Reinstall` thật và lần gỡ thật đều nhận cùng một lỗi từ Windows:
+
+```
+error 0x80070032: AppX Deployment Remove operation on package
+Microsoft.DesktopAppInstaller_1.29.380.0_x64__8wekyb3d8bbwe ... failed.
+This app is part of Windows and cannot be uninstalled on a per-user basis.
+An administrator can attempt to remove the app from the computer using
+Turn Windows Features on or off. However, it may not be possible to uninstall the app.
+```
+
+Hệ quả chính xác:
+
+| Thao tác | Kết quả trên máy này |
+|---|---|
+| `install-winget.ps1` (chưa cài) | Đăng ký gói có sẵn + provision → `winget` chạy được |
+| `install-winget.ps1 -Reinstall` | Không gỡ được gói cũ; bỏ qua bước gỡ, gọi `Add-AppxPackage` để đăng ký/cập nhật đè → exit 0 |
+| `uninstall_restore.ps1` chế độ gỡ (menu 1/2) | **Từ chối**, in rõ `NonRemovable=True` / `0x80070032`, **không sửa gì**, exit 1 |
+| `uninstall_restore.ps1 -KeepPackage` (menu 3) | Khôi phục registry, giữ WinGet → exit 0 nếu WinGet vẫn chạy |
+
+Đây là **giới hạn của Windows**, không phải lỗi script. Việc gỡ App Installer khỏi image LTSC (nếu làm được) phải dùng *Turn Windows Features on or off* / DISM và có thể không khả thi; tool-pack **cố ý không** can thiệp vào thành phần hệ thống.
+
 ---
 
 ## 5. Sau khi cài, WinGet nói chuyện với ai
@@ -217,11 +278,21 @@ Tool-pack này chỉ chịu trách nhiệm tới việc cài WinGet. Việc bạ
 
 ## 6. Thay đổi trong script liên quan tới độ tin cậy
 
+**2026-10-24 — thêm kiểm tra trước khi cài lại và công cụ `uninstall_restore`.**
+
+- `install-winget.ps1` phát hiện WinGet đã cài, so sánh với release mới nhất rồi hỏi bỏ qua / cài lại / thoát. Gói đã đăng ký nhưng `winget` không chạy được sẽ được tự động sửa. `-Reinstall` bỏ qua câu hỏi và ép cài lại; `-DryRun` chỉ xem trước.
+- **Phát hiện gói hệ thống:** image LTSC/IoT 24H2 có sẵn `Microsoft.DesktopAppInstaller` với `NonRemovable=True`; Windows từ chối `Remove-AppxPackage` (`0x80070032`, "part of Windows"). `install-winget.ps1 -Reinstall` nhận diện và **bỏ qua bước gỡ**, chỉ đăng ký/cập nhật đè. `uninstall_restore.ps1` **từ chối gỡ**, không sửa gì, exit 1; menu tự chuyển sang chế độ chỉ khôi phục registry. Đây là giới hạn của Windows, không phải lỗi script.
+- Thêm `ConvertTo-WingetVersion` / `Compare-WingetVersion` trong `lib.ps1`: chỉ so sánh `major.minor.patch`, nên package `1.29.380.0` và tag `v1.29.380` được coi là bằng nhau.
+- Đổi tên `restore-winget.ps1` → `uninstall_restore.ps1`, `restore.bat` → `uninstall_restore.bat`. Thêm menu 1/2/3/0, `-KeepPackage` (chỉ khôi phục registry, giữ WinGet), `-CleanCache` (xoá `cache\` sau khi xong), thống kê cache/backup lúc khởi động, cảnh báo khi máy có Microsoft Store hoặc không có backup do tool-pack tạo.
+- `Get-WingetState` giờ ghi cả `NonRemovable` vào `state-before.json` / `appx-allusers.json`, để biết gói nào Windows bảo vệ.
+- `backup\` **không bao giờ** bị xoá. Framework dùng chung (VCLibs/UI.Xaml/WindowsAppRuntime) vẫn được giữ mặc định.
+- **Kết quả test thật 2026-10-24:** `-DryRun`, `-DryRun -Reinstall` và `-Reinstall` đều exit 0; gỡ thật bị Windows chặn (exit 1, không thay đổi); `-KeepPackage` exit 0 và winget vẫn chạy; chi tiết ở §8.3.
+
 **2026-10-24 — thêm kiểm chữ ký Authenticode, sửa lỗi restore và `-SkipHashCheck`.**
 
 - `install-winget.ps1` gọi `Assert-MicrosoftSigned` cho bundle và từng `.appx` phụ thuộc; `Status` phải `Valid` và signer phải chứa `CN=Microsoft Corporation`, nếu không thì dừng. `-SkipHashCheck` **không** bỏ qua bước này.
 - Sửa lỗi `-SkipHashCheck`: trước đây khi hash lệch, file vẫn bị xoá rồi script tiếp tục (dẫn tới lỗi cài); giờ chỉ xoá khi thực sự dừng.
-- `restore-winget.ps1` không còn crash khi `backup\` rỗng, và bỏ qua các thư mục `snapshot-*` khi chọn backup mới nhất.
+- `restore-winget.ps1` (nay là `uninstall_restore.ps1`) không còn crash khi `backup\` rỗng, và bỏ qua các thư mục `snapshot-*` khi chọn backup mới nhất.
 - Đồng bộ tài liệu: bỏ các câu nói `cache\` cài offline được; `check-status.ps1` không còn coi `UI.Xaml` là gói bắt buộc.
 
 Các thay đổi này **chỉ sửa script**, không sửa hệ thống, nên không có mục mới trong `thay_doi_sys.md`.
@@ -284,35 +355,66 @@ Kiểm tra chéo với nguồn công khai: mở `https://github.com/microsoft/wi
 
 | Thư mục | Của lần chạy | Ghi chú |
 |---|---|---|
-| `backup\20261023-163004\` | lần cài **thất bại** 16:30 | có `undo.json`, `state-after-restore.json` |
-| `backup\20261023-164150\` | lần cài **thành công** 16:42 | có thêm export `Session Manager\Environment` |
+| `backup\20261024-074039\` | lần **cài lại thật** 2026-10-24 07:40 (`-Reinstall`) | có `state-before.json`, `appx-allusers.json`, `appx-provisioned.json`, `reg_*.reg`; `state-after-restore.json` được ghi lúc 07:41 khi chạy thử gỡ |
+| `backup\20261024-074650\` | lần **cài lại thật** 2026-10-24 07:46 (`-Reinstall`, bài test cuối) | đầy đủ như trên; dùng cho các bước `-KeepPackage` của bài test cuối |
 
 Mỗi thư mục chứa: `reg_*.reg` (registry export), `*.reg.absent.txt` (đánh dấu khoá không tồn tại lúc backup), `path-machine.txt`, `path-user.txt`, `state-before.json`, `appx-allusers.json`, `appx-provisioned.json`, và `undo.json` nếu có sửa registry.
 
-### 8.2 Khôi phục
+> Các thư mục `20261023-*` trong bản tài liệu trước thuộc bản tool-pack đặt tại `C:\Users\Ryzen9\AppData\Local\Programs\Qoder`, **không** nằm trong repo này. Bản ở `E:\Qcoder\winget-toolpack` hiện có `20261024-074039` và `20261024-074650`.
+
+### 8.2 Gỡ / khôi phục
 
 ```bat
-restore.bat -BackupTag 20261023-164150 -DryRun    :: xem trước
-restore.bat -BackupTag 20261023-164150            :: làm thật
+uninstall_restore.bat                                       :: menu gỡ / khôi phục
+uninstall_restore.bat -BackupTag 20261024-074650 -DryRun    :: xem trước
+uninstall_restore.bat -BackupTag 20261024-074650            :: làm thật
+uninstall_restore.bat -BackupTag 20261024-074650 -KeepPackage :: chỉ khôi phục registry
 ```
 
-`restore-winget.ps1` sẽ:
+Menu (khi chạy không tham số):
+
+| Chọn | Việc sẽ làm |
+|---|---|
+| **1** | Gỡ WinGet, **không** đụng registry |
+| **2** (mặc định) | Gỡ WinGet + khôi phục registry từ backup. Có thể chọn backup theo số thứ tự hoặc tag; Enter = bản mới nhất |
+| **3** | Chỉ khôi phục registry, **giữ** WinGet (`-KeepPackage`) |
+| **0** | Hủy, không làm gì |
+
+**Riêng máy này:** gói là `NonRemovable=True` nên menu tự phát hiện và **chỉ hiện lựa chọn khôi phục registry (1/0)**, không cho chọn gỡ. Nếu gọi thẳng chế độ gỡ (không `-KeepPackage`), script in lỗi `0x80070032`, **không sửa gì** và exit 1.
+
+Trước khi gỡ (với gói gỡ được), script in danh sách gói/provisioned sẽ bị xoá, thống kê `cache\` / `backup\` / `logs\`, và cảnh báo nếu máy có Microsoft Store hoặc không có backup do tool-pack tạo. Gỡ gói cần gõ **YES** (trừ khi `-Force`).
+
+Với gói **gỡ được**, `uninstall_restore.ps1` sẽ:
 1. Gỡ gói đã provision (`Remove-AppxProvisionedPackage -Online -AllUsers`).
 2. Gỡ gói của mọi user (`Remove-AppxPackage -AllUsers`).
 3. **Hoàn tác registry theo `undo.json`** — đây là đường chính xác, vì `reg import` chỉ **GỘP** giá trị chứ **không xoá được** một giá trị chưa từng tồn tại lúc backup.
 4. Import lại `.reg` làm lưới an toàn phụ.
-5. Đối chiếu với `state-before.json`, ghi `state-after-restore.json`.
-6. Ghi vào `thay_doi_sys.md`.
+5. Đối chiếu với `state-before.json`, ghi `state-after-restore.json`. Với `-KeepPackage`, kiểm tra WinGet vẫn chạy thay vì coi gói còn lại là sót.
+6. Hỏi có xoá `cache\` không (mặc định **không**), hoặc xoá ngay nếu có `-CleanCache`. `backup\` không bị đụng tới.
+7. Ghi vào `thay_doi_sys.md`.
 
-### 8.3 Những gì restore **cố ý giữ lại**
+Với gói **hệ thống** (`NonRemovable=True`), chỉ bước 3–7 chạy khi có `-KeepPackage`; chế độ gỡ dừng trước khi làm bất cứ điều gì.
+
+### 8.3 Những gì **cố ý giữ lại**
 
 | Thứ được giữ | Lý do |
 |---|---|
+| `Microsoft.DesktopAppInstaller` | Trên máy này: **luôn được giữ** vì là thành phần hệ thống `NonRemovable=True` — Windows không cho gỡ. Với gói gỡ được, chỉ giữ khi chọn **3** / `-KeepPackage`. |
 | `Microsoft.VCLibs.140.00`, `.UWPDesktop`, `Microsoft.UI.Xaml.2.8`, `Microsoft.WindowsAppRuntime.1.8` | Gói **framework dùng chung** — ứng dụng khác trên máy đang dùng. Gỡ có thể làm hỏng chúng. Thêm `-RemoveDependencies` nếu bạn chắc chắn muốn gỡ. |
-| File đã tải trong `cache\` (~300 MB) | Giữ để **lần cài sau không phải tải lại** bundle/zip cùng version. **Lưu ý: đây KHÔNG phải chế độ offline** — xem mục 8.4. |
-| Toàn bộ `backup\` | Giữ làm lịch sử. |
+| File đã tải trong `cache\` (~207 MB trên máy này; tối đa ~300 MB nếu phải tải cả `Dependencies.zip`) | Giữ để **lần cài sau không phải tải lại** bundle/zip cùng version. **Lưu ý: đây KHÔNG phải chế độ offline** — xem mục 8.4. Chỉ xoá khi có `-CleanCache` hoặc trả lời `y`. |
+| Toàn bộ `backup\` | Giữ làm lịch sử. **Script không bao giờ xoá backup.** |
 
-Đường restore này **đã được chạy thật một lần** (lúc 16:41, để hoàn tác `AllowAllTrustedApps`) và exit code 0.
+Kết quả chạy thật ngày **2026-10-24** (bài test elevated, đủ 5 bước):
+
+| Bước | Lệnh | Exit | Sau bước đó |
+|---|---|---|---|
+| Xem trước cài mới | `install-winget.ps1 -DryRun` | 0 | không đổi |
+| Xem trước cài lại | `install-winget.ps1 -DryRun -Reinstall` | 0 | không đổi |
+| Cài lại thật | `install-winget.ps1 -Reinstall` | **0** | winget v1.29.380 chạy, gói vẫn `NonRemovable=True` |
+| Gỡ thật | `uninstall_restore.ps1 -BackupTag <tag> -Force` | **1** (đúng thiết kế) | từ chối trước khi sửa gì; winget vẫn chạy, gói còn nguyên |
+| Khôi phục registry, giữ WinGet | `uninstall_restore.ps1 -BackupTag <tag> -KeepPackage -Force` | **0** | registry hoàn tác, winget vẫn chạy, gói còn nguyên |
+
+Tổng kết: `fail-count = 0`. Log chi tiết nằm trong `logs\` (không commit).
 
 ### 8.4 `cache\` KHÔNG cho phép cài offline (đính chính)
 
@@ -334,6 +436,7 @@ Tài liệu này trước đó ghi "giữ để có thể cài lại offline". *
 | `Dependencies.json` (manifest) | cùng release | **B** | HTTPS, chỉ là danh sách tên gói |
 | `License1.xml` | cùng release | **B** | HTTPS; **không có hash công bố** |
 | 4 gói framework đã cài | cùng release | **A** | Publisher `CN=Microsoft Corporation` |
+| `Microsoft.DesktopAppInstaller` (gói inbox của image) | Windows LTSC/IoT 24H2 | **A** | `NonRemovable=True`, `SignatureKind=Store`, tạo cùng thời điểm image; **Windows không cho gỡ** |
 | Nguồn `msstore` / `winget` / `winget-font` | `*.microsoft.com` | **A** | Tên miền Microsoft |
 | **Ứng dụng bạn cài bằng winget sau này** | **máy chủ của từng hãng** | **tuỳ hãng** | `winget show <app>` để xem URL |
 
@@ -345,15 +448,15 @@ Tài liệu này trước đó ghi "giữ để có thể cài lại offline". *
 
 | File | Vai trò |
 |---|---|
-| `install.bat` / `restore.bat` | lớp vỏ click-chạy được |
-| `install-winget.ps1` | trình cài đặt |
-| `restore-winget.ps1` | trình khôi phục |
+| `install.bat` / `uninstall_restore.bat` | lớp vỏ click-chạy được |
+| `install-winget.ps1` | trình cài đặt, có kiểm tra bản đã cài và `-Reinstall` |
+| `uninstall_restore.ps1` | gỡ WinGet / khôi phục registry, có menu và `-KeepPackage` |
 | `check-status.ps1` | khảo sát read-only 9 mục |
-| `lib.ps1` | thư viện chung (log, backup, tải file, hash) |
+| `lib.ps1` | thư viện chung (log, backup, tải file, hash, so sánh phiên bản) |
 | `thay_doi_sys.md` | **nhật ký bắt buộc** — mọi thay đổi trên hệ thống, kèm đường dẫn backup và lệnh restore |
 | `huongdan_toot-pack.md` | tài liệu này |
 | `winget-toolpack.zip` | **bản đóng gói để mang sang máy khác** — xem mục 11 |
-| `cache\` | file cài đã tải (~300 MB) |
+| `cache\` | file cài đã tải (~207 MB trên máy này; ~300 MB nếu có `Dependencies.zip`) |
 | `backup\` | các bản backup |
 | `logs\` | log từng lần chạy |
 
@@ -366,8 +469,8 @@ Tài liệu này trước đó ghi "giữ để có thể cài lại offline". *
 Chỉ cần **6 file, đặt trong cùng một thư mục**:
 
 ```
-lib.ps1              check-status.ps1     install.bat
-install-winget.ps1   restore-winget.ps1   restore.bat
+lib.ps1              check-status.ps1       install.bat
+install-winget.ps1   uninstall_restore.ps1  uninstall_restore.bat
 ```
 
 `lib.ps1` được dot-source từ `$PSScriptRoot`, nên **bắt buộc phải nằm cùng thư mục** với 3 file `.ps1` kia. Không có đường dẫn tuyệt đối nào hardcoded trong script (đã kiểm tra: không có `D:\`, không có tên máy, không có tên user) — chép sang ổ nào, thư mục nào cũng chạy.
@@ -380,7 +483,7 @@ Nên chép dưới dạng **`.zip`** — một số công cụ chép file có th
 
 | Thứ | Lý do |
 |---|---|
-| `backup\` | Backup là **của riêng máy đó**. Chép backup máy A sang máy B rồi chạy `restore.bat` trên máy B sẽ áp trạng thái registry/snapshot **sai máy**. |
+| `backup\` | Backup là **của riêng máy đó**. Chép backup máy A sang máy B rồi chạy `uninstall_restore.bat` trên máy B sẽ áp trạng thái registry/snapshot **sai máy**. |
 | `thay_doi_sys.md` | Là lịch sử của máy này. Chép sang sẽ khiến máy mới ghi tiếp thay đổi của nó vào lịch sử máy cũ → nhật ký sai sự thật. Để script tự tạo file mới. |
 | `logs\` | Log cũ của máy này, vô nghĩa trên máy mới. |
 | `cache\` | Chép được, nhưng **không** giúp cài offline (mục 8.4). Chỉ đỡ tải lại nếu release vẫn là bản đó. |

@@ -10,7 +10,10 @@
       https://learn.microsoft.com/en-us/windows/iot/iot-enterprise/deployment/install-winget-windows-iot
 
     Order of operations, all logged and all backed up first:
-      1. Preflight read-only survey of the machine.
+      1. Preflight read-only survey of the machine. If WinGet is already
+         installed, compare it with the latest release and ask whether to
+         skip, reinstall/upgrade, or quit; a broken install is repaired
+         without asking. -Reinstall skips the question.
       2. Backup: registry export + full appx/provisioned snapshot + PATH.
       3. Resolve the latest stable release from microsoft/winget-cli via the GitHub API.
       4. Download msixbundle + License1.xml into .\cache (reused only while the
@@ -38,6 +41,12 @@
     AllUsers (default) = per-user install + provisioning, per the Microsoft doc.
     CurrentUser        = Add-AppxPackage only, no DISM provisioning.
 
+.PARAMETER Reinstall
+    Remove the existing DesktopAppInstaller package(s) and install the latest
+    release even when a working copy is already present. Without this switch
+    an existing install triggers a skip/reinstall/quit prompt, and a package
+    that is registered but not runnable is repaired automatically.
+
 .PARAMETER SkipHashCheck
     Install even if the published SHA256 cannot be verified. Use only if
     Microsoft changes the release asset naming and the lookup breaks. The
@@ -45,6 +54,9 @@
 
 .EXAMPLE
     .\install-winget.ps1 -DryRun
+
+.EXAMPLE
+    .\install-winget.ps1 -Reinstall
 
 .EXAMPLE
     .\install-winget.ps1
@@ -57,6 +69,7 @@ param(
     [ValidateSet('AllUsers', 'CurrentUser')]
     [string]$Scope = 'AllUsers',
     [string]$LogFile,
+    [switch]$Reinstall,
     [switch]$SkipHashCheck
 )
 
@@ -86,6 +99,7 @@ if (-not (Test-Admin)) {
     $childArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"",
                    '-Elevated', '-Scope', $Scope, '-LogFile', "`"$LogFile`"")
     if ($DryRun)        { $childArgs += '-DryRun' }
+    if ($Reinstall)     { $childArgs += '-Reinstall' }
     if ($SkipHashCheck) { $childArgs += '-SkipHashCheck' }
     try {
         $p = Start-Process powershell.exe -Verb RunAs -ArgumentList $childArgs -Wait -PassThru
@@ -105,6 +119,8 @@ $ExitCode = 0
 $backupDir = $null   # referenced by the catch block; must exist even if we fail before step 1
 $Changes = @()       # human-readable list of what actually got modified
 $UndoActions = @()   # precise revert instructions, persisted to backup\undo.json
+$rel = $null         # release info, fetched early when a version check is needed
+$replaceExisting = $false
 
 try {
     # ------------------------------------------------------------------ 0
@@ -136,10 +152,100 @@ try {
     Write-Host ''
     Write-Host (Format-StateReport $before)
 
-    if ($before.PerUser.Count -and $before.Provisioned.Count -and $before.WingetVersion) {
-        Log ("WinGet đã cài sẵn và đang chạy ({0}). Không cần làm gì." -f $before.WingetVersion) 'OK'
-        Log 'Muốn nâng cấp bản mới hơn: chạy .\restore-winget.ps1 rồi chạy lại script này.'
-        exit 0
+    $installedVer = $before.WingetVersion
+    if (-not $installedVer -and $before.PerUser.Count) { $installedVer = [string]$before.PerUser[0].Version }
+    $workingInstall = [bool]($before.PerUser.Count -and $before.WingetVersion)
+    $needsProvision = [bool]($Scope -eq 'AllUsers' -and -not $before.Provisioned.Count)
+    $fullyInstalled = [bool]($workingInstall -and -not $needsProvision)
+    $perUserOnly = [bool]($workingInstall -and $needsProvision)
+
+    # Some images (LTSC/IoT 24H2) ship DesktopAppInstaller as an inbox app.
+    # Windows marks those NonRemovable and rejects every Remove-AppxPackage
+    # call with 0x80070032, so -Reinstall can only re-register them.
+    $pkgEntries = @(@($before.PerUser) + @($before.AllUsers) | Where-Object { $_.Name -eq $PkgName })
+    $systemPackage = (@($pkgEntries | Where-Object { $_.NonRemovable }).Count -gt 0)
+    if ($systemPackage) {
+        Log 'Microsoft.DesktopAppInstaller là thành phần hệ thống của Windows trên máy này (NonRemovable=True) - Windows không cho gỡ gói này.' 'WARN'
+    }
+
+    if ($Reinstall) {
+        if ($before.PerUser.Count) {
+            if ($systemPackage) {
+                Log '-Reinstall: bỏ qua câu hỏi; sẽ đăng ký/cập nhật đè gói hệ thống thay vì gỡ.' 'WARN'
+            } else {
+                Log '-Reinstall: bỏ qua câu hỏi, gỡ bản cũ rồi cài lại bản mới nhất.' 'WARN'
+            }
+            $replaceExisting = $true
+        } else {
+            Log '-Reinstall: chưa có gói nào để gỡ - cài mới bình thường.'
+        }
+    } elseif ($before.PerUser.Count -and -not $before.WingetVersion) {
+        if ($systemPackage) {
+            Log 'Có gói DesktopAppInstaller nhưng winget không chạy được - gói là thành phần hệ thống nên sẽ đăng ký lại để sửa, không gỡ.' 'WARN'
+        } else {
+            Log 'Có gói DesktopAppInstaller nhưng winget không chạy được - sẽ gỡ và cài lại để sửa.' 'WARN'
+        }
+        $replaceExisting = $true
+    }
+
+    if (($fullyInstalled -or $perUserOnly) -and -not $Reinstall) {
+        if ($perUserOnly) { Log 'WinGet đang chạy nhưng chưa provision cho user mới.' 'WARN' }
+        try { $rel = Get-LatestWingetRelease }
+        catch { Log ('Không kiểm tra được bản mới nhất: ' + $_.Exception.Message) 'WARN' }
+
+        Write-Host ''
+        if ($rel) {
+            $cmp = Compare-WingetVersion -Installed $installedVer -Latest $rel.Tag
+            Log ('Đang cài   : ' + $installedVer)
+            Log ('Mới nhất   : ' + $rel.Tag)
+            switch ($cmp) {
+                'older' { Log ('Có bản mới hơn: ' + $rel.Tag) 'WARN' }
+                'equal' { Log 'Đang dùng đúng bản mới nhất.' 'OK' }
+                'newer' { Log 'Bản đang cài mới hơn release mới nhất - có thể bạn đang dùng bản preview.' 'WARN' }
+                default { Log 'Không so sánh được hai phiên bản.' 'WARN' }
+            }
+        } else {
+            Log ('Đang cài: ' + $installedVer + ' - không kiểm tra được bản mới nhất vì không gọi được GitHub API.') 'WARN'
+        }
+
+        if ($DryRun) {
+            Log 'DRY-RUN: khi chạy thật, script sẽ hỏi bỏ qua / cài lại / thoát rồi mới làm tiếp.' 'DRY'
+            Log 'DRY-RUN: dùng -DryRun -Reinstall để xem trước toàn bộ quy trình cài lại.' 'DRY'
+            exit 0
+        }
+
+        if (-not [Environment]::UserInteractive) {
+            Log 'Không có console tương tác - mặc định bỏ qua, không sửa gì.' 'WARN'
+            exit 0
+        }
+
+        Write-Host ''
+        $rLabel = if ($systemPackage) { 'Đăng ký lại / cập nhật gói hệ thống (không gỡ được)' } elseif ($perUserOnly) { 'Gỡ và cài lại bản mới nhất, rồi provision' } else { 'Gỡ và cài lại bản mới nhất' }
+        if ($perUserOnly) {
+            Write-Host '  [P] Chỉ provision cho mọi user (mặc định)'
+            Write-Host ('  [R] ' + $rLabel)
+            Write-Host '  [S] Bỏ qua, không làm gì'
+            Write-Host '  [Q] Thoát'
+            $defaultChoice = 'P'
+        } else {
+            Write-Host '  [S] Bỏ qua, không làm gì (mặc định)'
+            Write-Host ('  [R] ' + $rLabel)
+            Write-Host '  [Q] Thoát'
+            $defaultChoice = 'S'
+        }
+        $ans = ''
+        try { $ans = ([string](Read-Host ('Chọn [' + $defaultChoice + ']'))).Trim().ToUpperInvariant() } catch { }
+        if (-not $ans) { $ans = $defaultChoice }
+        if ($ans -notin @('P', 'R', 'S', 'Q')) {
+            Log ('Lựa chọn "' + $ans + '" không hợp lệ - mặc định ' + $defaultChoice + '.') 'WARN'
+            $ans = $defaultChoice
+        }
+        if ($ans -in @('S', 'Q')) {
+            Log 'Đã bỏ qua theo yêu cầu - không sửa gì trên hệ thống.' 'OK'
+            exit 0
+        }
+        if ($ans -eq 'R') { $replaceExisting = $true }
+        else { Log 'Chỉ provision, giữ nguyên gói hiện có.' }
     }
 
     # ------------------------------------------------------------------ 1
@@ -151,12 +257,16 @@ try {
     # ------------------------------------------------------------------ 2
     Write-Host ''
     Log '--- [2/8] Lấy thông tin release mới nhất từ microsoft/winget-cli ---' 'STEP'
-    try {
-        $rel = Get-LatestWingetRelease
-    } catch {
-        Log ('Không gọi được GitHub API: ' + $_.Exception.Message) 'ERR'
-        Log 'Thử lại sau, hoặc tải tay rồi dùng -SkipHashCheck với file trong .\cache' 'WARN'
-        throw
+    if ($rel) {
+        Log 'Dùng lại thông tin release đã lấy ở bước kiểm tra phiên bản.' 'OK'
+    } else {
+        try {
+            $rel = Get-LatestWingetRelease
+        } catch {
+            Log ('Không gọi được GitHub API: ' + $_.Exception.Message) 'ERR'
+            Log 'Thử lại sau, hoặc tải tay rồi dùng -SkipHashCheck với file trong .\cache' 'WARN'
+            throw
+        }
     }
     if (-not $rel.Bundle)  { throw 'Release mới nhất không có asset .msixbundle - Microsoft có thể đã đổi cách đóng gói.' }
     if (-not $rel.License -and $Scope -eq 'AllUsers') {
@@ -395,7 +505,61 @@ try {
     Log '--- [6/8] Cài Microsoft.DesktopAppInstaller cho user hiện tại ---' 'STEP'
     $unlockKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock'
 
-    if ($before.PerUser.Count) {
+    if ($replaceExisting) {
+        $oldProvisioned = @($before.Provisioned | Where-Object { $_.DisplayName -eq $PkgName })
+        $oldAllUsers = @($before.AllUsers | Where-Object { $_.Name -eq $PkgName } | Select-Object -ExpandProperty PackageFullName -Unique)
+        $oldPerUser = @($before.PerUser | Where-Object { $_.Name -eq $PkgName } | Select-Object -ExpandProperty PackageFullName -Unique)
+
+        if ($systemPackage) {
+            Log 'Bỏ qua bước gỡ: Windows bảo vệ gói này (NonRemovable=True) và sẽ từ chối Remove-AppxPackage với lỗi 0x80070032. Chỉ đăng ký/cập nhật đè.' 'WARN'
+            if ($DryRun) { Log 'DRY-RUN: Add-AppxPackage sẽ được gọi để đăng ký lại gói hệ thống.' 'DRY' }
+        } elseif ($DryRun) {
+            Log 'Gỡ bản cũ trước khi cài bản mới. Nếu bước cài sau đó thất bại, máy sẽ tạm thời không có winget - chạy lại script để cài tiếp.' 'WARN'
+            foreach ($p in $oldProvisioned) { Log ('DRY-RUN: Remove-AppxProvisionedPackage -Online -PackageName ' + $p.DisplayName) 'DRY' }
+            if ($Scope -eq 'AllUsers' -and $oldAllUsers.Count) {
+                foreach ($full in $oldAllUsers) { Log ('DRY-RUN: Remove-AppxPackage -AllUsers -Package ' + $full) 'DRY' }
+            } else {
+                foreach ($full in $oldPerUser) { Log ('DRY-RUN: Remove-AppxPackage -Package ' + $full) 'DRY' }
+            }
+        } else {
+            Log 'Gỡ bản cũ trước khi cài bản mới. Nếu bước cài sau đó thất bại, máy sẽ tạm thời không có winget - chạy lại script để cài tiếp.' 'WARN'
+            if ($Scope -eq 'AllUsers') {
+                foreach ($p in $oldProvisioned) {
+                    try {
+                        Remove-AppxProvisionedPackage -Online -PackageName $p.DisplayName | Out-Null
+                        Log ('  đã gỡ provisioned cũ: ' + $p.DisplayName + ' ' + $p.Version) 'OK'
+                        $Changes += ('Gỡ provisioned cũ: ' + $p.DisplayName + ' ' + $p.Version)
+                    } catch {
+                        Log ('  không gỡ được provisioned cũ: ' + $_.Exception.Message + ' - vẫn thử cài tiếp.') 'WARN'
+                    }
+                }
+            }
+
+            if ($Scope -eq 'AllUsers' -and $oldAllUsers.Count) {
+                foreach ($full in $oldAllUsers) {
+                    try {
+                        Remove-AppxPackage -AllUsers -Package $full
+                        Log ('  đã gỡ gói cũ (all-users): ' + $full) 'OK'
+                        $Changes += ('Gỡ gói cũ: ' + $full)
+                    } catch {
+                        Log ('  không gỡ được ' + $full + ': ' + $_.Exception.Message + ' - vẫn thử cài tiếp.') 'WARN'
+                    }
+                }
+            } else {
+                foreach ($full in $oldPerUser) {
+                    try {
+                        Remove-AppxPackage -Package $full
+                        Log ('  đã gỡ gói cũ (user hiện tại): ' + $full) 'OK'
+                        $Changes += ('Gỡ gói cũ: ' + $full)
+                    } catch {
+                        Log ('  không gỡ được ' + $full + ': ' + $_.Exception.Message + ' - vẫn thử cài tiếp.') 'WARN'
+                    }
+                }
+            }
+        }
+    }
+
+    if ($before.PerUser.Count -and -not $replaceExisting) {
         Log ('Đã có sẵn bản ' + ($before.PerUser[0].Version) + ' cho user này - bỏ qua Add-AppxPackage.') 'OK'
     } elseif ($DryRun) {
         Log ("DRY-RUN: Add-AppxPackage -Path `"{0}`"" -f $bundlePath) 'DRY'
@@ -450,7 +614,7 @@ try {
     Log '--- [7/8] Provision cho mọi user (Add-AppxProvisionedPackage) ---' 'STEP'
     if ($Scope -ne 'AllUsers') {
         Log 'Scope = CurrentUser nên bỏ qua bước provision.' 'WARN'
-    } elseif ($before.Provisioned.Count) {
+    } elseif ($before.Provisioned.Count -and (-not $replaceExisting -or $systemPackage)) {
         Log ('Đã provision sẵn bản ' + ($before.Provisioned[0].Version) + ' - bỏ qua.') 'OK'
     } elseif ($DryRun) {
         Log ("DRY-RUN: Add-AppxProvisionedPackage -Online -PackagePath `"{0}`" -LicensePath `"{1}`"" -f $bundlePath, $licensePath) 'DRY'
@@ -521,9 +685,12 @@ try {
         Log '--- Ghi nhật ký thay_doi_sys.md ---' 'STEP'
     }
     $sb = New-Object System.Text.StringBuilder
-    [void]$sb.AppendLine('## ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' — ' + $(if ($DryRun) { 'DRY RUN cài WinGet (không sửa gì)' } else { 'Cài WinGet ' + $rel.Tag }))
+    $logTitle = if ($DryRun) { 'DRY RUN cài WinGet (không sửa gì)' }
+                elseif ($replaceExisting) { 'Cài lại WinGet ' + $rel.Tag }
+                else { 'Cài WinGet ' + $rel.Tag }
+    [void]$sb.AppendLine('## ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' — ' + $logTitle)
     [void]$sb.AppendLine('')
-    [void]$sb.AppendLine('- **Script**: `install-winget.ps1 -Scope ' + $Scope + $(if ($DryRun) { ' -DryRun' } else { '' }) + '`')
+    [void]$sb.AppendLine('- **Script**: `install-winget.ps1 -Scope ' + $Scope + $(if ($replaceExisting) { ' -Reinstall' } else { '' }) + $(if ($DryRun) { ' -DryRun' } else { '' }) + '`')
     [void]$sb.AppendLine('- **Máy**: ' + $os.ProductName + ' ' + $os.DisplayVersion + ' build ' + $os.Build + ' (' + $os.EditionID + ')')
     [void]$sb.AppendLine('- **Kiến trúc**: ' + $os.TargetArchLabel + ' — phụ thuộc cài bản `' + $os.TargetArch + '`')
     [void]$sb.AppendLine('- **Người chạy**: ' + [Security.Principal.WindowsIdentity]::GetCurrent().Name)
@@ -537,6 +704,10 @@ try {
         foreach ($c in $Changes) { [void]$sb.AppendLine('- ' + $c) }
     } else {
         [void]$sb.AppendLine('- Không có thay đổi (gói đã tồn tại sẵn).')
+    }
+    if ($systemPackage) {
+        [void]$sb.AppendLine('')
+        [void]$sb.AppendLine('> `Microsoft.DesktopAppInstaller` là thành phần hệ thống của Windows (NonRemovable=True). Windows từ chối `Remove-AppxPackage` với lỗi `0x80070032`, nên script không gỡ gói cũ mà chỉ đăng ký/cập nhật đè.')
     }
     [void]$sb.AppendLine('')
     [void]$sb.AppendLine('### Trạng thái trước → sau')
@@ -569,14 +740,25 @@ try {
     [void]$sb.AppendLine('')
     [void]$sb.AppendLine('### Cách khôi phục')
     [void]$sb.AppendLine('```powershell')
-    [void]$sb.AppendLine('# Gỡ WinGet và nạp lại registry từ backup này:')
-    [void]$sb.AppendLine('.\restore-winget.ps1 -BackupTag ' + $RunTag)
-    [void]$sb.AppendLine('')
-    [void]$sb.AppendLine('# Xem thử sẽ gỡ những gì, chưa sửa gì cả:')
-    [void]$sb.AppendLine('.\restore-winget.ps1 -BackupTag ' + $RunTag + ' -DryRun')
+    if ($systemPackage) {
+        [void]$sb.AppendLine('# Gói hệ thống không gỡ được - chỉ nạp lại registry từ backup này:')
+        [void]$sb.AppendLine('.\uninstall_restore.ps1 -BackupTag ' + $RunTag + ' -KeepPackage')
+        [void]$sb.AppendLine('')
+        [void]$sb.AppendLine('# Hoặc mở menu (máy này chỉ có lựa chọn khôi phục registry):')
+        [void]$sb.AppendLine('.\uninstall_restore.bat')
+    } else {
+        [void]$sb.AppendLine('# Gỡ WinGet và nạp lại registry từ backup này:')
+        [void]$sb.AppendLine('.\uninstall_restore.ps1 -BackupTag ' + $RunTag)
+        [void]$sb.AppendLine('')
+        [void]$sb.AppendLine('# Xem thử sẽ gỡ những gì, chưa sửa gì cả:')
+        [void]$sb.AppendLine('.\uninstall_restore.ps1 -BackupTag ' + $RunTag + ' -DryRun')
+        [void]$sb.AppendLine('')
+        [void]$sb.AppendLine('# Hoặc mở menu tương tác (gỡ / khôi phục registry / chỉ khôi phục registry):')
+        [void]$sb.AppendLine('.\uninstall_restore.bat')
+    }
     [void]$sb.AppendLine('```')
     [void]$sb.AppendLine('')
-    [void]$sb.AppendLine('> `restore-winget.ps1` **không** gỡ `Microsoft.VCLibs` / `Microsoft.UI.Xaml` vì các ứng dụng khác đang dùng chung. Thêm `-RemoveDependencies` nếu bạn chắc chắn muốn gỡ.')
+    [void]$sb.AppendLine('> `uninstall_restore.ps1` **không** gỡ `Microsoft.VCLibs` / `Microsoft.UI.Xaml` / `Microsoft.WindowsAppRuntime` vì các ứng dụng khác đang dùng chung. Thêm `-RemoveDependencies` nếu bạn chắc chắn muốn gỡ.')
     Add-ChangeLogEntry -Path $ChangeLog -Markdown $sb.ToString() -DryRun:$DryRun
 
     # ---------------------------------------------------------- summary ----
@@ -630,7 +812,7 @@ catch {
                     [void]$sbFail.AppendLine('- `undo.json` đã được lưu, chứa chỉ dẫn hoàn tác chính xác từng giá trị registry.')
                     [void]$sbFail.AppendLine('')
                     [void]$sbFail.AppendLine('```powershell')
-                    [void]$sbFail.AppendLine('.\restore-winget.ps1 -BackupTag ' + $RunTag + ' -Force')
+                    [void]$sbFail.AppendLine('.\uninstall_restore.ps1 -BackupTag ' + $RunTag + ' -Force')
                     [void]$sbFail.AppendLine('```')
                 }
                 [void]$sbFail.AppendLine('')
@@ -641,7 +823,7 @@ catch {
     }
 
     if (-not $DryRun -and $backupDir) {
-        Log ('Backup vẫn còn ở ' + $backupDir + ' — có thể chạy restore-winget.ps1 -BackupTag ' + $RunTag) 'WARN'
+        Log ('Backup vẫn còn ở ' + $backupDir + ' — có thể chạy uninstall_restore.ps1 -BackupTag ' + $RunTag) 'WARN'
     }
     $script:ExitCode = 1
 }

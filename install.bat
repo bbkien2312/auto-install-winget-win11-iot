@@ -9,9 +9,11 @@ rem  install-winget.ps1 lam. File .bat nay khong sua gi tren he thong.
 rem
 rem  Tham so duoc chuyen nguyen van xuong script PowerShell, vi du:
 rem     install.bat -DryRun
+rem     install.bat -Reinstall
 rem     install.bat -Scope CurrentUser
 rem     install.bat -DryRun -SkipHashCheck
 rem  Khong co tham so = cai that (all-users + provisioned).
+rem  Neu WinGet da cai va dang chay, script se hoi bo qua / cai lai / thoat.
 rem ---------------------------------------------------------------------
 
 cd /d "%~dp0"
@@ -31,7 +33,7 @@ if "%RC%"=="0" (
 ) else (
     echo [LOI] install-winget.ps1 thoat voi exit code %RC%.
     echo       Doc log trong thu muc logs\ de biet loi o buoc nao.
-    echo       Neu can hoan tac:  restore.bat
+    echo       Neu can hoan tac:  uninstall_restore.bat
 )
 echo.
 echo Nhat ky thay doi he thong: thay_doi_sys.md

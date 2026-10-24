@@ -1,6 +1,6 @@
 ﻿#requires -Version 5.1
 <#
-    lib.ps1 - Shared helpers for install-winget.ps1 / restore-winget.ps1 / check-status.ps1
+    lib.ps1 - Shared helpers for install-winget.ps1 / uninstall_restore.ps1 / check-status.ps1
 
     Scope of this library: logging, system-state snapshot, registry backup, and the
     thay_doi_sys.md change log. No system modification happens in here.
@@ -177,8 +177,8 @@ function Get-WingetState {
     [pscustomobject]@{
         Timestamp        = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
         IsAdmin          = (Test-Admin)
-        PerUser          = @($perUser     | Select-Object Name, Version, Architecture, PackageFullName)
-        AllUsers         = @($allUsers    | Select-Object Name, Version, Architecture, PackageFullName, InstallLocation)
+        PerUser          = @($perUser     | Select-Object Name, Version, Architecture, PackageFullName, NonRemovable)
+        AllUsers         = @($allUsers    | Select-Object Name, Version, Architecture, PackageFullName, InstallLocation, NonRemovable)
         Provisioned      = @($provisioned | Select-Object DisplayName, Version, Architecture)
         Dependencies     = @($deps)
         WingetAliasPath  = $alias
@@ -216,6 +216,32 @@ function Format-StateReport {
         [void]$sb.AppendLine("  AllowDevelopmentWithoutDevLicense = $($State.SideloadPolicy.AllowDevelopmentWithoutDevLicense)")
     } else { [void]$sb.AppendLine("AppModelUnlock (HKLM): key absent") }
     return $sb.ToString()
+}
+
+# ---------------------------------------------------------------- versions ----
+
+# Package versions are 4-part (1.29.380.0) while release tags are 3-part
+# (v1.29.380). Only major.minor.patch is compared: .NET treats a missing
+# revision as -1, so the same build would otherwise look older than itself.
+function ConvertTo-WingetVersion {
+    param([string]$Value)
+    if (-not $Value) { return $null }
+    $m = [regex]::Match($Value.Trim(), '^[vV]?\s*(\d+(?:\.\d+){0,3})')
+    if (-not $m.Success) { return $null }
+    $parts = @($m.Groups[1].Value.Split('.'))
+    if ($parts.Count -gt 3) { $parts = @($parts[0], $parts[1], $parts[2]) }
+    while ($parts.Count -lt 3) { $parts += '0' }
+    try { return [version]($parts -join '.') } catch { return $null }
+}
+
+function Compare-WingetVersion {
+    param([string]$Installed, [string]$Latest)
+    $i = ConvertTo-WingetVersion $Installed
+    $l = ConvertTo-WingetVersion $Latest
+    if ($null -eq $i -or $null -eq $l) { return 'unknown' }
+    if ($i -lt $l) { return 'older' }
+    if ($i -gt $l) { return 'newer' }
+    return 'equal'
 }
 
 # ------------------------------------------------------------------ backup ----
@@ -281,7 +307,7 @@ function New-SystemBackup {
     Write-Utf8Bom (Join-Path $dir 'state-before.json') ($state | ConvertTo-Json -Depth 4)
     Log "  exported  state-before.json" 'OK'
 
-    @(Get-AppxPackage -AllUsers | Select-Object Name, Version, Architecture, PackageFullName, InstallLocation) |
+    @(Get-AppxPackage -AllUsers | Select-Object Name, Version, Architecture, PackageFullName, InstallLocation, NonRemovable) |
         ConvertTo-Json -Depth 3 | Set-Content -Path (Join-Path $dir 'appx-allusers.json') -Encoding UTF8
     Log "  exported  appx-allusers.json ($(@(Get-AppxPackage -AllUsers).Count) packages)" 'OK'
 
@@ -325,7 +351,7 @@ KHÔNG sửa tay các mục đã ghi — hãy thêm mục mới để giữ lị
 
 # `reg import` only merges - it cannot delete a value that did not exist when
 # the backup was taken. So every registry write is also recorded here as an
-# explicit undo action, which restore-winget.ps1 replays.
+# explicit undo action, which uninstall_restore.ps1 replays.
 function Save-UndoPlan {
     param([Parameter(Mandatory)][string]$BackupDir, [AllowEmptyCollection()]$Actions)
     if (-not $BackupDir) { return }
