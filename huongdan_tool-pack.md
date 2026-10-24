@@ -454,7 +454,7 @@ Tài liệu này trước đó ghi "giữ để có thể cài lại offline". *
 | `check-status.ps1` | khảo sát read-only 9 mục |
 | `lib.ps1` | thư viện chung (log, backup, tải file, hash, so sánh phiên bản, font console) |
 | `thay_doi_sys.md` | **nhật ký bắt buộc** — mọi thay đổi trên hệ thống, kèm đường dẫn backup và lệnh restore |
-| `huongdan_toot-pack.md` | tài liệu này |
+| `huongdan_tool-pack.md` | tài liệu này |
 | `winget-toolpack.zip` | **bản đóng gói để mang sang máy khác** — xem mục 11 |
 | `cache\` | file cài đã tải (~207 MB trên máy này; ~300 MB nếu có `Dependencies.zip`) |
 | `backup\` | các bản backup |
@@ -481,7 +481,7 @@ install-winget.ps1   uninstall_restore.ps1  uninstall_restore.bat
 
 Script **tự tạo** những thứ còn thiếu: `cache\`, `logs\`, `backup\`, và `thay_doi_sys.md` (kèm header).
 
-Nên chép dưới dạng **`.zip`** — một số công cụ chép file có thể làm **mất BOM UTF-8**, khi đó PowerShell 5.1 đọc tiếng Việt trong script thành mojibake.
+Nên chép dưới dạng **`.zip`** — một số công cụ chép file có thể làm **mất BOM UTF-8**, khi đó PowerShell 5.1 đọc tiếng Việt trong script thành mojibake. Khi mang sang máy đã có bản zip cũ, đặt tên kèm ngày (ví dụ `winget-toolpack-20261024.zip`) để không lẫn hai bản; nội dung giống hệt `winget-toolpack.zip`.
 
 ### 11.2 KHÔNG chép sang máy khác
 

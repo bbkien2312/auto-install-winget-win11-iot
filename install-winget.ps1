@@ -735,7 +735,7 @@ try {
         if ($UndoActions.Count) {
             [void]$sb.AppendLine('  - `undo.json` — chỉ dẫn hoàn tác CHÍNH XÁC từng giá trị registry đã sửa (cần thiết vì `reg import` chỉ gộp chứ không xoá)')
         }
-        [void]$sb.AppendLine('- File cài đặt giữ lại ở `cache\` để đỡ phải tải lại nếu release hiện hành không đổi (không dùng được để cài offline - xem `huongdan_toot-pack.md` muc 8.4)')
+        [void]$sb.AppendLine('- File cài đặt giữ lại ở `cache\` để đỡ phải tải lại nếu release hiện hành không đổi (không dùng được để cài offline - xem `huongdan_tool-pack.md` muc 8.4)')
     }
     [void]$sb.AppendLine('')
     [void]$sb.AppendLine('### Cách khôi phục')

@@ -7,4 +7,4 @@ thay_doi_sys.md
 *.log
 
 # Build artifact: rebuild from the tracked scripts instead of committing it.
-/winget-toolpack.zip
+/winget-toolpack*.zip
